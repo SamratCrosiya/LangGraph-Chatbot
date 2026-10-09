@@ -1,0 +1,532 @@
+CHATBOT-IN-LANGGRAPH: PROJECT AND INTERVIEW GUIDE
+=================================================
+
+Purpose of this document
+------------------------
+This guide describes the chatbot-in-langgraph-main folder as it exists in this
+workspace. It covers the architecture, each app variant, tools, memory, setup,
+known limitations, and likely AI engineer / software developer interview
+questions. It does not claim that every tutorial or code sample in the wider
+unzip folder is part of this chatbot.
+
+1. Project summary
+------------------
+This is a Python conversational chatbot with Streamlit user interfaces and
+LangGraph backends. The model is called through LangChain's ChatGroq wrapper.
+Depending on the selected frontend/backend pair, the app can:
+
+  * answer ordinary chat questions;
+  * keep separate conversations by thread ID and, in some variants, reload
+    saved conversations from SQLite;
+  * stream a response as it is generated;
+  * call a web search, arithmetic, and stock-quote tool;
+  * save, list, complete, and delete tasks for the current chat thread;
+  * answer questions using text retrieved from an uploaded PDF (RAG); or
+  * connect to tools exposed by configured MCP servers.
+
+These are several example app variants, not one application with every feature
+enabled at once. The frontend script selected in the Streamlit command imports
+one backend. For example, the tool frontend uses the tool backend, and the PDF
+frontend uses the RAG backend.
+
+2. Technologies and their jobs
+-------------------------------
+Python                 Application and integration code.
+Streamlit              Chat UI, upload control, sidebar, session state, and
+                       streaming display.
+LangChain              Chat model, message types, tool descriptions, document
+                       loaders, splitting, and vector store integrations.
+LangGraph              State graph, routing between model and tools, and
+                       checkpoint-based conversation state.
+Groq API / ChatGroq    Hosted language-model inference. The API key is read
+                       from GROQ_API_KEY. GROQ_MODEL overrides the default.
+SQLite                 Durable LangGraph checkpoint storage in the database
+                       file chatbot.db for SQLite variants.
+InMemorySaver          In-process checkpoint storage for the simple backend;
+                       it disappears when that Python process exits.
+FastEmbed              Local embedding generation for the PDF/RAG variant.
+FAISS                  In-memory vector index used to find relevant PDF chunks.
+PyPDF                  PDF text extraction through PyPDFLoader.
+DuckDuckGo search      Search tool used in tool-enabled variants; requires
+                       network access and the ddgs package.
+Requests               HTTP call to Alpha Vantage in the stock-price tool.
+SQLite task table      Persistent task records, separated by conversation
+                       thread ID.
+MCP adapters           Discover and call tools exposed by MCP servers in the
+                       MCP variant.
+python-dotenv          Loads values from a local .env file into the process
+                       environment.
+
+The dependency ranges are in requirements.txt. An installed virtual
+environment is local setup state and should not be uploaded to GitHub.
+
+3. Architecture and message flow
+---------------------------------
+The general request path is:
+
+  Browser -> Streamlit frontend -> LangGraph graph -> ChatGroq
+                                        |              |
+                                        |              +-> final assistant reply
+                                        +-> optional tool node -> tool result
+                                                               -> model reply
+
+The graph state is a TypedDict with a messages list. The list uses LangGraph's
+add_messages reducer, so each graph step can add messages without replacing the
+existing conversation. Messages use LangChain message types such as
+HumanMessage, AIMessage, and ToolMessage.
+
+The basic graph has one chat node: START -> chat_node -> END. The model receives
+the current messages and returns an assistant message.
+
+The tool graph adds a tools node and a conditional route. The model either
+returns a normal answer, in which case the graph ends, or requests a tool call,
+in which case tools_condition routes to ToolNode. ToolNode executes the selected
+tool, adds the tool result to state, and routes back to the model so it can
+interpret the result and answer. This can repeat for additional tool calls.
+
+The frontend passes a configurable thread_id to the graph. A checkpointer uses
+that ID to associate saved state with a conversation. Streamlit session_state
+also holds the current display history and selected thread during the browser
+session. These are separate layers: the frontend's display state is not the
+database, and the database does not make every feature durable.
+
+4. App variants and entry points
+--------------------------------
+Run one of these from the chatbot-in-langgraph-main folder. Each command starts
+a different example UI; do not run multiple variants on the same port unless
+you choose separate ports.
+
+  streamlit run streamlit_frontend.py
+    Basic Groq chat using langgraph_backend.py and InMemorySaver. The sample
+    frontend uses a fixed thread ID "thread-1".
+
+  streamlit run streamlit_frontend_streaming.py
+    Basic chat with streamed display. It also uses the in-memory backend and
+    the fixed thread ID.
+
+  streamlit run streamlit_frontend_database.py
+    SQLite-backed conversations using langgraph_database_backend.py, with
+    thread selection and a New Chat button.
+
+  streamlit run streamlit_frontend_tool.py
+    SQLite-backed chat with search, calculator, stock quote, conversation
+    selection, task manager, and streamed assistant tokens/tool status.
+
+  streamlit run streamlit_frontend_threading.py
+    Thread-selection and streaming UI using the tool backend. Despite the
+    filename, the backend is the same tool backend and has the same tools,
+    including the task manager.
+
+  streamlit run streamlit_rag_frontend.py
+    PDF upload and question answering, plus search, calculator, and stock
+    quote and task-manager tools, using langraph_rag_backend.py. The backend
+    filename is intentionally spelled "langraph_rag_backend.py" in this
+    project.
+
+  streamlit run streamlit_frontend_mcp.py
+    MCP-enabled UI using langgraph_mcp_backend.py, with search, stock quote,
+    persistent task management, and tools discovered from configured MCP
+    servers.
+
+Setup:
+  1. Create/activate a virtual environment.
+  2. Install dependencies: pip install -r requirements.txt
+  3. Copy .env.example to .env and put your own Groq key in GROQ_API_KEY.
+  4. Start one frontend command above from this directory.
+
+The checked-in .env.example contains placeholders. Never commit a real .env,
+API key, database with personal conversations, or virtual environment.
+
+5. Tools and what they do
+-------------------------
+Web search
+  In tool and RAG backends, DuckDuckGoSearchRun provides search results to the
+  model when it chooses the search tool. This is network-dependent, may fail
+  or return incomplete results, and is not a guaranteed source of truth. The
+  tool itself does not provide a project-level citation or fact-checking
+  policy.
+
+Calculator
+  In tool and RAG backends, calculator accepts two floating-point inputs and
+  one operation: add, sub, mul, or div. It returns a result dictionary and
+  handles division by zero and unsupported operation names. It is basic
+  arithmetic, not a symbolic math engine.
+
+Stock quote
+  In tool, RAG, and MCP backends, get_stock_price calls Alpha Vantage's
+  GLOBAL_QUOTE endpoint for a symbol. It needs ALPHA_VANTAGE_API_KEY. If the
+  key is absent, it returns an explanatory error object. The provider may
+  enforce quotas and its quote may not be real-time or complete. This tool is
+  an API integration example, not investment advice.
+
+Task manager
+  In tool, RAG, and MCP backends, manage_tasks can add, list, complete, or
+  delete tasks. Tasks are stored in the chat_tasks table in chatbot.db and
+  scoped to the current LangGraph thread ID. IDs returned when adding/listing
+  tasks are used to complete or delete the right item. This makes a small
+  personal todo list available in the same chat without requiring another
+  service. Thread scoping separates conversation lists, but is not user
+  authentication or a secure multi-user boundary. It currently stores plain
+  task text and completion state only; due dates, priorities, reminders, and
+  recurring schedules are not implemented.
+
+  Example requests: "Remember to submit my assignment", "Show my tasks",
+  "Mark task 3 complete", and "Delete task 2". When the model is unsure which
+  task the user means, it should list tasks and clarify instead of choosing
+  arbitrarily.
+
+PDF retrieval (RAG)
+  The RAG frontend accepts a PDF, extracts page text, splits it with
+  RecursiveCharacterTextSplitter (chunk_size 1000, overlap 200), embeds chunks
+  locally using BAAI/bge-small-en-v1.5 through FastEmbed, and builds a FAISS
+  index. rag_tool retrieves up to four similar chunks for a query. The model
+  gets the retrieved text as tool output and writes the answer. Metadata
+  includes page information from the PDF loader and the source filename.
+
+MCP tools
+  The MCP backend configures a local stdio server for arithmetic and a remote
+  streamable-HTTP expense server. It discovers tools with
+  MultiServerMCPClient.get_tools() and adds discovered tools to ToolNode. The
+  remote server is an external service; its availability, behavior, privacy,
+  and tool list are outside this app's control. MCP server configuration is
+  in langgraph_mcp_backend.py. MCP_MATH_SERVER_PATH is configurable, but the
+  current command uses "python3" directly, so Windows may require adjustment.
+
+6. Memory: short-term, persistent state, and long-term memory
+-------------------------------------------------------------
+Short-term conversational context
+  The messages list is the current conversation context sent to the model.
+  add_messages appends new messages to graph state. This is conversational
+  state, often called short-term memory (STM) in agent tutorials. There is no
+  explicit sliding-window trim, summarization, or token-budget management in
+  these backends. Long conversations can exceed model context limits or become
+  expensive.
+
+In-memory checkpoint variant
+  langgraph_backend.py uses InMemorySaver. It can keep graph checkpoints while
+  that Python process is running, but they are lost when the process stops.
+  The basic frontends use a fixed thread ID, so they share the same thread in
+  that running process rather than creating a durable conversation per user.
+
+SQLite checkpoint variants
+  Database, tool, RAG, and MCP backends use SqliteSaver or AsyncSqliteSaver and
+  the relative file chatbot.db. Checkpoints are grouped by thread_id and can
+  survive an app restart on the same machine, as long as the database file is
+  kept and the same working directory is used. The UI can list thread IDs and
+  reload graph message state. This is durable conversation history, but it is
+  not semantic long-term memory: there is no user profile store, cross-thread
+  retrieval, memory extraction, or vector search over old chats.
+
+PDF index memory
+  The RAG backend holds retrievers and document metadata in Python dictionaries
+  keyed by thread ID. The FAISS vectors live in process memory; they are not
+  persisted to disk. Restarting the process loses the PDF index, even though
+  the SQLite chat messages may remain. Uploading another PDF for a thread
+  replaces that thread's active retriever. The frontend's ingested-doc labels
+  are Streamlit session state and do not restore an index after a restart.
+
+Task storage
+  The task manager writes structured task rows to SQLite and scopes them by
+  thread ID. This is persistent application data, not LLM memory: the model
+  retrieves tasks by calling list and does not automatically recall them from
+  every message. The list survives an app restart while chatbot.db is retained.
+
+Therefore, the accurate interview answer is: the project demonstrates STM
+(messages in graph state), optional durable checkpointed chat history in
+SQLite, and temporary document retrieval state for RAG. It does not implement
+true application-level LTM. A persistent vector store or a profile/memory
+database with retrieval would need to be added for LTM.
+
+7. Important limitations and production gaps
+---------------------------------------------
+Model and credentials
+  A working GROQ_API_KEY and a currently available model name are required.
+  The current default model setting is openai/gpt-oss-20b sent through Groq;
+  the "openai/" prefix is the model identifier, not evidence that this code
+  calls OpenAI. Provider model availability, quotas, and limits can change.
+  There is no retry/backoff strategy for model/API rate limits.
+
+Conversation growth and context
+  Messages are accumulated without trimming or summarization. Large histories
+  can exceed context length and raise latency/cost. The code does not manage
+  token budgets or selectively retrieve older messages.
+
+RAG quality and persistence
+  The RAG implementation uses a small local embedding model and top-4 vector
+  similarity. It has no reranker, hybrid search, relevance threshold,
+  evaluation set, persistent vector index, or reliable citation requirement.
+  Scanned/image-only PDFs need OCR, which is not implemented. PDF extraction
+  and chunking can miss tables, layout, or context split across chunks. The
+  assistant can still make unsupported claims; retrieval does not guarantee
+  grounding.
+
+Tools and failures
+  Search and external API tools depend on network/service availability. The
+  stock tool does not validate symbols or normalize all provider error
+  responses. Some backend tool exceptions may propagate to the UI. Tool
+  authorization, audit logging, rate limiting, and confirmation for sensitive
+  actions are not implemented. The current tools are mostly read-only, but
+  MCP tools are supplied by external servers and should be reviewed.
+
+MCP variant
+  MCP discovery exceptions are caught and converted to an empty tool list, so
+  an unavailable server can silently disable its tools. The remote expense
+  endpoint is hard-coded. The local server path may not exist, and the
+  hard-coded python3 executable is not portable to all Windows installations.
+  The background event loop/thread has no explicit shutdown lifecycle.
+
+Security and deployment
+  This is a local learning/demo app, not a multi-user production service. It
+  has no login, tenant isolation, per-user database access control, secret
+  management service, request quotas, abuse protection, or deployment
+  monitoring. A thread ID is not an authentication boundary. SQLite is local
+  single-instance persistence, not a production multi-worker database plan.
+  Uploaded PDFs and prompts should be treated as untrusted input. The project
+  has no malware scanning, upload-size policy, or data-retention controls.
+
+Frontend and maintainability
+  Multiple frontends duplicate session and rendering code. Streamlit reruns
+  scripts on interaction, so UI state and graph checkpoint state must be kept
+  in sync. The basic UI uses a constant thread ID; threaded variants generate
+  UUIDs. The project has no automated tests, CI, type-checking/lint workflow,
+  observability, or formal benchmark/evaluation harness visible in this
+  folder. Dependencies are version-ranged rather than locked to a reproducible
+  complete environment.
+
+8. How to describe this project in an interview
+-----------------------------------------------
+One-minute explanation:
+
+  "I built a Streamlit chatbot with a LangGraph backend and Groq-hosted chat
+  inference. The graph stores conversation messages in typed state and uses a
+  checkpointer keyed by thread ID. The tool-enabled graph lets the model choose
+  between replying and calling search, calculator, or stock quote tools, then
+  sends the tool result back to the model. I also have a PDF RAG variant that
+  extracts and chunks a PDF, creates local FastEmbed vectors, indexes them in
+  FAISS, and retrieves the four most relevant chunks. There are SQLite-backed
+  conversation variants and an MCP integration example. The current memory is
+  message history plus checkpoints; the PDF index is only in process memory,
+  and there is no semantic long-term user memory. For production I would add
+  authentication and tenant isolation, persistent vector storage, history
+  trimming, retries, observability, evaluations, and stronger source
+  grounding."
+
+Be precise about personal contribution: describe the parts you actually
+implemented or modified, and identify tutorial-derived or adapted material
+honestly. Do not claim that an example is production-ready just because it
+runs locally.
+
+9. Likely technical interview questions and answer outlines
+-----------------------------------------------------------
+
+Q1. What problem does the project solve?
+A. It provides a chat UI with a graph-based conversational backend and several
+   optional capabilities: tools, saved threads, PDF retrieval, and MCP
+   integrations. It is a learning/demo project, not a production service.
+
+Q2. Why use LangGraph instead of a single LLM call?
+A. A graph makes the control flow explicit. It can route from the model to a
+   tool node and back, keep state, checkpoint work, and support multi-step
+   execution. A single LLM call is simpler when no tools or stateful flow are
+   needed.
+
+Q3. What is a graph state and what does add_messages do?
+A. ChatState declares the messages field. add_messages is the reducer that
+   merges new messages into that field, preserving conversation state across
+   graph steps rather than replacing the whole list each time.
+
+Q4. Walk through a tool call.
+A. The model is bound to tool schemas. It may return a tool-call message.
+   tools_condition routes that result to ToolNode, ToolNode invokes the named
+   function and returns a ToolMessage, then the graph calls the model again to
+   produce a user-facing response. A normal model answer follows the end route.
+
+Q5. Is the tool call itself performed by Groq?
+A. The model decides/request-generates the tool call. The application's
+   LangGraph ToolNode executes the Python or MCP tool. The tool output is then
+   passed back to the model. The model does not directly execute Python code.
+
+Q6. What is the difference between a tool and RAG here?
+A. A tool is a callable operation such as search, arithmetic, or stock lookup.
+   RAG is a retrieve-then-generate pattern: the rag_tool searches document
+   chunks and supplies retrieved text as context for a model answer. In this
+   code, RAG itself is exposed to the model as a tool.
+
+Q7. Explain the PDF ingestion pipeline.
+A. Upload bytes are written to a temporary PDF. PyPDFLoader extracts pages;
+   RecursiveCharacterTextSplitter creates 1000-character chunks with 200
+   characters overlap; FastEmbed creates vectors using BAAI/bge-small-en-v1.5;
+   FAISS indexes vectors; the retriever returns up to four similar chunks per
+   query. The temporary PDF file is removed after indexing.
+
+Q8. What embedding model is used and why?
+A. FastEmbed with BAAI/bge-small-en-v1.5. It runs locally, so PDF embedding
+   does not need a separate paid embedding API key. Local inference uses local
+   compute and the embedding model must be downloaded/available.
+
+Q9. What is the memory design? Is there STM and LTM?
+A. The message list is STM/context. SQLite checkpoints preserve thread
+   history in the database-backed variants. InMemorySaver is process-only.
+   The RAG FAISS index is temporary in-process state. There is no semantic LTM
+   across conversations, profile memory, or persistent vector database.
+
+Q10. What does thread_id do?
+A. It is the checkpoint namespace/key used to keep graph state for one
+   conversation separate from another. It is not an account ID or security
+   control. The UI generates UUIDs in threaded variants; simple variants use
+   a constant ID.
+
+Q11. What is the difference between Streamlit session state and a checkpointer?
+A. Streamlit session state stores current UI data for a browser session. A
+   LangGraph checkpointer stores graph state by thread ID and can reload it
+   according to its storage backend. Session state can disappear independently
+   of SQLite, and SQLite does not restore an in-memory PDF index.
+
+Q12. Why choose SQLite? What are its limits?
+A. It is simple, local, and durable across app restarts for a single-machine
+   demo. It does not provide a complete multi-user deployment architecture,
+   horizontal scaling, access control, or operational database management.
+
+Q13. How would you implement real long-term memory?
+A. Define what to remember and consent/retention rules first. Extract concise
+   facts or summaries, associate them with an authenticated user/tenant, store
+   them in a durable database/vector store with metadata, retrieve only
+   relevant memories, provide update/delete controls, and evaluate precision,
+   recall, privacy, and stale-memory behavior. Do not treat the full transcript
+   as an unrestricted memory store.
+
+Q14. How would you improve RAG answer quality?
+A. Add representative evaluation questions and expected sources; improve PDF
+   parsing/OCR; tune chunking; use metadata filters, hybrid lexical/vector
+   retrieval, reranking, and a relevance threshold; prompt for abstention when
+   evidence is missing; require page/source citations; measure retrieval and
+   answer faithfulness; persist indexes and version the embedding/index
+   configuration.
+
+Q15. How would you handle long conversations?
+A. Track tokens, reserve room for the output, trim old turns or summarize
+   them, keep recent turns verbatim, retrieve older relevant facts selectively,
+   and test that summaries preserve important user intent. Add model-context
+   limits and graceful error handling.
+
+Q16. How are tools made safe?
+A. Validate inputs, impose timeouts and quotas, constrain network destinations
+   and file access, authenticate users, authorize each action, log calls,
+   handle provider errors, and require human confirmation for irreversible or
+   consequential actions. Treat tool outputs as untrusted text. The demo only
+   has basic checks and timeouts for the stock HTTP call.
+
+Q17. What happens if a tool fails?
+A. The tool error can be returned as tool output or propagate as an exception,
+   depending on the failure and tool. Production code should normalize errors,
+   retry only safe transient failures with bounded backoff, set timeouts, and
+   tell the model/user when information is unavailable instead of fabricating
+   a successful result.
+
+Q18. How would you test this system?
+A. Unit-test calculator edge cases and PDF splitting/retrieval helpers; use
+   fake model/tool responses to test graph routing; integration-test provider
+   adapters separately; test thread isolation and persistence across restart;
+   build a RAG evaluation set measuring retrieval recall and answer grounding;
+   test missing keys, rate limits, malformed PDFs, and MCP server outages.
+   Avoid requiring live paid APIs for normal unit tests.
+
+Q19. How would you evaluate the chatbot?
+A. Define task-specific success criteria. For RAG measure recall@k,
+   precision/relevance, citation correctness, and groundedness. For tools
+   measure correct tool selection, valid arguments, execution success, and
+   final-answer correctness. Track latency, token usage, failures, and user
+   feedback. Use a fixed test set and compare changes before deployment.
+
+Q20. How would you add observability?
+A. Record request/thread correlation IDs, model and prompt version, tool name,
+   latency, token usage, outcomes, and normalized errors. Redact secrets and
+   personal data. Add traces across graph nodes, dashboards/alerts, and
+   retention policies. LangSmith is one possible tracing/evaluation option if
+   configured with suitable privacy controls.
+
+Q21. How would you deploy this for multiple users?
+A. Add authentication and tenant-aware authorization; use a server database
+   and persistent vector store; store secrets in the deployment secret
+   manager; isolate tenant data; add worker-safe connection handling, request
+   limits, monitoring, backups, migration strategy, and retention/deletion
+   workflows. Do not rely on a guessable thread ID for access control.
+
+Q22. What is MCP and how is it used here?
+A. Model Context Protocol provides a standard way for an app to discover and
+   invoke tools exposed by external/local servers. The adapter connects to
+   configured servers, discovers tools, and exposes them to the graph's tool
+   node. The server remains a separate trust and availability boundary.
+
+Q23. Why can a model hallucinate even when RAG is enabled?
+A. Retrieval can return irrelevant or incomplete chunks, parsing can miss
+   content, and the prompt does not enforce a verified citation for every
+   statement. RAG supplies evidence but does not guarantee the model uses it
+   correctly. Add relevance checks, grounding instructions, citations, and
+   evaluation, and allow abstention.
+
+Q24. What are the key reliability risks?
+A. External provider/network outages, model rate limits, tool errors, SQLite
+   file/connection issues, missing MCP servers, unbounded chat history, and
+   non-persistent RAG indexes. Address with bounded retries, timeouts,
+   graceful degradation, health checks, persistence, and monitoring.
+
+Q25. What would you prioritize next?
+A. For a demo: add setup/README instructions, tests, error messages, and
+   reproducible dependency locking. For production: authentication and tenant
+   isolation, durable per-user storage, memory/context policy, persistent RAG
+   indexing with evaluation, robust retries/observability, and data retention
+   controls. Explain priorities in terms of users and risks.
+
+Q26. What did you personally build?
+A. Answer truthfully based on your actual work. Separate your own changes from
+   code adapted from tutorials, examples, or collaborators. Be ready to point
+   to the relevant files and explain design decisions, bugs you fixed, and
+   trade-offs you made.
+
+Q27. Why use temperature 0?
+A. It requests less sampling variation and can make tool-oriented answers more
+   consistent, but it does not make outputs deterministic or factually correct.
+   Provider/model behavior can still vary.
+
+Q28. Why does the model identifier start with "openai/" if the app uses Groq?
+A. The configured identifier is passed to ChatGroq as the Groq model name.
+   Provider routing is determined by the ChatGroq client and Groq API key. The
+   prefix in this identifier alone does not mean this code calls OpenAI. Verify
+   model availability with Groq when running because provider catalogs change.
+
+Q29. What does the new task tool do and how is its data stored?
+A. manage_tasks provides add, list, complete, and delete actions. It stores
+   task rows in the local chatbot.db SQLite file and scopes each query/update
+   by the current graph thread ID. The model must call list to recall tasks;
+   they are structured app data, not automatically included LLM memory.
+
+Q30. What are the task tool's current limits?
+A. It has no due dates, reminders, priorities, recurrence, cross-device
+   sync, or authenticated user identity. Thread IDs keep chat lists separate
+   for this demo, but do not establish secure access control. Those features
+   would require product rules, schema changes, and user authentication.
+
+10. Quick facts to memorize
+---------------------------
+  * UI: Streamlit.
+  * Orchestration: LangGraph StateGraph.
+  * State: messages list with add_messages reducer.
+  * Model provider: Groq via ChatGroq.
+  * Tools: DuckDuckGo search, basic calculator, Alpha Vantage quote, and the
+    SQLite-backed task manager; plus rag_tool in the PDF variant and discovered
+    MCP tools in MCP variant.
+  * Task actions: add, list, complete, delete. Tasks persist locally in SQLite
+    and are scoped to a conversation thread.
+  * Durable chat variants: SQLite checkpoint file chatbot.db, keyed by
+    thread_id.
+  * Basic backend: InMemorySaver, lost on process restart.
+  * RAG: PyPDFLoader -> text splitter -> local FastEmbed -> FAISS -> top-4
+    similarity retrieval -> model answer.
+  * Memory answer: STM message history; durable checkpointed chat history in
+    SQLite where enabled; no semantic LTM; RAG index is process memory only.
+  * Main engineering gaps: no auth/tenant isolation, no history trimming,
+    limited error/retry handling, no automated evaluation/tests, and no
+    persistent RAG index.
+
+End of guide.

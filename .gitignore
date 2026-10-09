@@ -1,0 +1,22 @@
+# Local secrets and configuration
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python virtual environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local chat checkpoints, task data, and SQLite journal files
+*.db
+*.db-shm
+*.db-wal
+
+# Editor and operating-system files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
